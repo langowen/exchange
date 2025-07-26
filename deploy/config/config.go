@@ -4,12 +4,15 @@ import (
 	"github.com/ilyakaznacheev/cleanenv"
 	"github.com/joho/godotenv"
 	"log"
+	"reflect"
+	"strings"
 	"time"
 )
 
 type Config struct {
 	Storage    Storage
 	HTTPServer HTTPServer
+	Fetcher    Fetcher
 }
 
 type Storage struct {
@@ -27,8 +30,14 @@ type HTTPServer struct {
 	Port        string        `env:"HTTP_PORT" env-default:"8082"`
 	Timeout     time.Duration `env:"HTTP_TIMEOUT" env-default:"2m"`
 	IdleTimeout time.Duration `env:"HTTP_IDLE_TIMEOUT" env-default:"60s"`
-	SigningKey  string        `env:"HTTP_SIGNING_KEY" env-default:"MY_SIGNING_KEY"`
-	TokenTTL    time.Duration `env:"HTTP_TOKEN_TTL" env-default:"24h"`
+}
+
+type Fetcher struct {
+	URL         string        `env:"FETCHER_URL" env-default:"https://min-api.cryptocompare.com/data/price"`
+	Rate        string        `env:"FETCHER_RATE" env-default:"BTC,ETH"`
+	ValueRate   string        `env:"FETCHER_VALUE_RATE" env-default:"USD,JPY,EUR"`
+	Timeout     time.Duration `env:"FETCHER_TIMEOUT" env-default:"10s"`
+	TimeTickers time.Duration `env:"FETCHER_TIME_TICKERS" env-default:"10s"`
 }
 
 func NewConfig() *Config {
@@ -42,4 +51,17 @@ func NewConfig() *Config {
 	}
 
 	return cfg
+}
+
+func (c *Config) Split(fieldName string) []string {
+	v := reflect.ValueOf(&c.Fetcher).Elem()
+	f := v.FieldByName(fieldName)
+	if !f.IsValid() || f.Kind() != reflect.String {
+		return nil
+	}
+	str := f.String()
+	if str == "" {
+		return nil
+	}
+	return strings.Split(str, ",")
 }
