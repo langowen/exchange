@@ -8,9 +8,7 @@ CREATE TABLE fiat_currencies (
                                  code VARCHAR(5) UNIQUE NOT NULL
 );
 
-//TODO убрать ID
 CREATE TABLE exchange_rates (
-                                id SERIAL PRIMARY KEY,
                                 crypto_id INTEGER REFERENCES cryptocurrencies(id) ON DELETE CASCADE,
                                 fiat_id INTEGER REFERENCES fiat_currencies(id) ON DELETE CASCADE,
                                 amount DECIMAL(20, 2) NOT NULL,

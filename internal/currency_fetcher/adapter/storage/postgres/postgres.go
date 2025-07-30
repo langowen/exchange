@@ -2,79 +2,58 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/langowen/exchange/deploy/config"
 	"github.com/langowen/exchange/internal/entities"
-	"log/slog"
+	"github.com/pkg/errors"
 	"time"
 )
 
 type Storage struct {
-	db  *pgxpool.Pool
-	cfg *config.Config
+	db *pgxpool.Pool
 }
 
-func NewStorage(pool *pgxpool.Pool, cfg *config.Config) *Storage {
+func NewStorage(pool *pgxpool.Pool) *Storage {
 	return &Storage{
-		db:  pool,
-		cfg: cfg,
+		db: pool,
 	}
 }
 
-func New(ctx context.Context, cfg *config.Config) (*Storage, error) {
+func InitStorage(ctx context.Context, dsn string) (*Storage, error) {
 	const op = "storage.postgres.New"
-
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s search_path=%s",
-		cfg.Storage.Host,
-		cfg.Storage.Port,
-		cfg.Storage.User,
-		cfg.Storage.Password,
-		cfg.Storage.DBName,
-		cfg.Storage.SSLMode,
-		cfg.Storage.Schema,
-	)
 
 	poolConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("%s: parse config failed: %w", op, err)
+		return nil, errors.Wrap(err, op)
 	}
 	poolConfig.MaxConns = 25
 	poolConfig.MinConns = 5
 	poolConfig.MaxConnLifetime = 10 * time.Minute
 	poolConfig.MaxConnIdleTime = 5 * time.Minute
 
-	ctx, cancel := context.WithTimeout(ctx, cfg.Storage.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
 	defer cancel()
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		return nil, fmt.Errorf("%s: pgxpool connect failed: %w", op, err)
+		return nil, errors.Wrap(err, op)
 	}
 
-	if err := pool.Ping(ctx); err != nil {
+	if err = pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("%s: ping failed: %w", op, err)
+		return nil, errors.Wrap(err, op)
 	}
 
-	storageBD := NewStorage(pool, cfg)
+	storageBD := NewStorage(pool)
 
-	slog.Info("PostgresSQL storage initialized successfully")
 	return storageBD, nil
 }
 
-func (storage *Storage) SaveRate(ctx context.Context, rate *entities.ExchangeRate) error {
-	const op = "storage.postgres.SaveRate"
+func (s *Storage) SaveRates(ctx context.Context, rates []entities.ExchangeRate) error {
+	const op = "storage.postgres.SaveRates"
 
-	var cryptoID int
-	err := storage.db.QueryRow(ctx, `INSERT INTO cryptocurrencies (code) VALUES ($1) ON CONFLICT (code) DO UPDATE SET code=EXCLUDED.code RETURNING id`, rate.Title).Scan(&cryptoID)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("%s: upsert cryptocurrency failed: %w", op, err)
-	}
-
-	tx, err := storage.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("%s: begin transaction failed: %w", op, err)
+		return errors.Wrap(err, op)
 	}
 	defer func() {
 		if err != nil {
@@ -82,27 +61,106 @@ func (storage *Storage) SaveRate(ctx context.Context, rate *entities.ExchangeRat
 		}
 	}()
 
-	for _, fiatValue := range rate.FiatValues {
-		var fiatID int
-		err = tx.QueryRow(ctx, `INSERT INTO fiat_currencies (code) VALUES ($1) ON CONFLICT (code) DO UPDATE SET code=EXCLUDED.code RETURNING id`, fiatValue.Currency).Scan(&fiatID)
+	for _, rate := range rates {
+		var cryptoID int
+
+		err = tx.QueryRow(ctx, `SELECT id FROM cryptocurrencies WHERE code = $1`, rate.Title).Scan(&cryptoID)
 		if err != nil {
-			return fmt.Errorf("%s: upsert fiat currency failed: %w", op, err)
+			return errors.Wrap(err, op)
 		}
 
-		_, err = tx.Exec(ctx, `
-			INSERT INTO exchange_rates (crypto_id, fiat_id, amount, timestamp)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (crypto_id, fiat_id, timestamp) DO UPDATE SET amount=EXCLUDED.amount
-		`, cryptoID, fiatID, fiatValue.Amount, rate.DateUpdate)
-		if err != nil {
-			return fmt.Errorf("%s: save exchange rate failed: %w", op, err)
+		for _, fiatValue := range rate.FiatValues {
+			var fiatID int
+
+			err = tx.QueryRow(ctx, `SELECT id FROM fiat_currencies WHERE code = $1`, fiatValue.Currency).Scan(&fiatID)
+			if err != nil {
+				return errors.Wrap(err, op)
+			}
+
+			_, err = tx.Exec(ctx, `
+                INSERT INTO exchange_rates (crypto_id, fiat_id, amount, timestamp)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (crypto_id, fiat_id, timestamp) 
+                DO UPDATE SET amount = EXCLUDED.amount
+            `, cryptoID, fiatID, fiatValue.Amount, rate.DateUpdate)
+			if err != nil {
+				return errors.Wrap(err, op)
+			}
 		}
 	}
 
-	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("%s: commit transaction failed: %w", op, err)
+	if err := tx.Commit(ctx); err != nil {
+		return errors.Wrap(err, op)
 	}
 
-	slog.Debug("rates saved successfully", "crypto", rate.Title, "fiat_count", len(rate.FiatValues))
+	return nil
+}
+
+func (s *Storage) GetRates(ctx context.Context) ([]entities.ExchangeRate, error) {
+	const op = "storage.postgres.GetRates"
+
+	cryptoQuery := `SELECT code FROM cryptocurrencies ORDER BY id`
+	cryptoRows, err := s.db.Query(ctx, cryptoQuery)
+	if err != nil {
+		return nil, errors.Wrap(err, op)
+	}
+	defer cryptoRows.Close()
+
+	var cryptoCurrencies []string
+	for cryptoRows.Next() {
+		var code string
+		if err = cryptoRows.Scan(&code); err != nil {
+			return nil, errors.Wrap(err, op)
+		}
+		cryptoCurrencies = append(cryptoCurrencies, code)
+	}
+
+	if err := cryptoRows.Err(); err != nil {
+		return nil, errors.Wrap(err, op)
+	}
+
+	fiatQuery := `SELECT code FROM fiat_currencies ORDER BY id`
+	fiatRows, err := s.db.Query(ctx, fiatQuery)
+	if err != nil {
+		return nil, errors.Wrap(err, op)
+	}
+	defer fiatRows.Close()
+
+	var fiatCurrencies []entities.FiatPrice
+	for fiatRows.Next() {
+		var fiat entities.FiatPrice
+		if err = fiatRows.Scan(&fiat.Currency); err != nil {
+			return nil, errors.Wrap(err, op)
+		}
+		fiatCurrencies = append(fiatCurrencies, fiat)
+	}
+
+	if err = fiatRows.Err(); err != nil {
+		return nil, errors.Wrap(err, op)
+	}
+
+	result := make([]entities.ExchangeRate, 0, len(cryptoCurrencies))
+	for _, cryptoCode := range cryptoCurrencies {
+		fiat := make([]entities.FiatPrice, len(fiatCurrencies))
+		copy(fiat, fiatCurrencies)
+
+		rate, err := entities.NewRate(cryptoCode, fiat, time.Time{})
+		if err != nil {
+			return nil, errors.Wrap(err, op)
+		}
+		result = append(result, *rate)
+	}
+
+	return result, nil
+}
+
+func (s *Storage) SaveNewCurrency(ctx context.Context, currency string) error {
+	const op = "storage.postgres.SaveNewCurrency"
+
+	_, err := s.db.Exec(ctx, `INSERT INTO cryptocurrencies (code) VALUES ($1)`, currency)
+	if err != nil {
+		return errors.Wrap(err, op)
+	}
+
 	return nil
 }

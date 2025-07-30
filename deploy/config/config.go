@@ -4,8 +4,6 @@ import (
 	"github.com/ilyakaznacheev/cleanenv"
 	"github.com/joho/godotenv"
 	"log"
-	"reflect"
-	"strings"
 	"time"
 )
 
@@ -13,6 +11,7 @@ type Config struct {
 	Storage    Storage
 	HTTPServer HTTPServer
 	Fetcher    Fetcher
+	Redis      Redis
 }
 
 type Storage struct {
@@ -33,11 +32,15 @@ type HTTPServer struct {
 }
 
 type Fetcher struct {
-	URL         string        `env:"FETCHER_URL" env-default:"https://min-api.cryptocompare.com/data/price"`
-	Rate        string        `env:"FETCHER_RATE" env-default:"BTC,ETH"`
-	ValueRate   string        `env:"FETCHER_VALUE_RATE" env-default:"USD,JPY,EUR"`
+	URL         string        `env:"FETCHER_URL" env-default:"https://min-api.cryptocompare.com/data/pricemulti"`
 	Timeout     time.Duration `env:"FETCHER_TIMEOUT" env-default:"10s"`
 	TimeTickers time.Duration `env:"FETCHER_TIME_TICKERS" env-default:"10s"`
+}
+
+type Redis struct {
+	Host     string `yaml:"host" env:"REDIS_HOST" env-required:"true"`
+	Password string `yaml:"password" env:"REDIS_PASSWORD" env-default:""`
+	DB       int    `yaml:"db" env:"REDIS_DB" env-default:"5"`
 }
 
 func NewConfig() *Config {
@@ -51,17 +54,4 @@ func NewConfig() *Config {
 	}
 
 	return cfg
-}
-
-func (c *Config) Split(fieldName string) []string {
-	v := reflect.ValueOf(&c.Fetcher).Elem()
-	f := v.FieldByName(fieldName)
-	if !f.IsValid() || f.Kind() != reflect.String {
-		return nil
-	}
-	str := f.String()
-	if str == "" {
-		return nil
-	}
-	return strings.Split(str, ",")
 }

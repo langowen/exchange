@@ -1,4 +1,4 @@
-package service
+package fetcher
 
 import (
 	"context"
@@ -6,5 +6,7 @@ import (
 )
 
 type Storage interface {
-	SaveRate(ctx context.Context, rate *entities.ExchangeRate) error
+	SaveRates(ctx context.Context, rates []entities.ExchangeRate) error
+	GetRates(ctx context.Context) ([]entities.ExchangeRate, error)
+	SaveNewCurrency(ctx context.Context, currency string) error
 }

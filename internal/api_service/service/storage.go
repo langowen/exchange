@@ -7,6 +7,7 @@ import (
 )
 
 type Storage interface {
-	GetRates(ctx context.Context, currency string, date time.Time, opt ...Option) (*entities.ExchangeRate, error)
-	GetAllRates(ctx context.Context, date time.Time, option string) ([]entities.ExchangeRate, error)
+	GetRate(ctx context.Context, currency string, date time.Time, opts ...Option) (*entities.ExchangeRate, error)
+	GetAllRates(ctx context.Context, date time.Time, opts ...Option) ([]entities.ExchangeRate, error)
+	ExistsRate(ctx context.Context, currency string) (bool, error)
 }

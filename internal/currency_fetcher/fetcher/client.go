@@ -1,9 +1,10 @@
-package service
+package fetcher
 
-import "context"
+import (
+	"context"
+	"github.com/langowen/exchange/internal/entities"
+)
 
 type HTTPClient interface {
-	Fetch(ctx context.Context, url string) (map[string]float64, error)
+	ApiClient(ctx context.Context, rates []entities.ExchangeRate, url string) ([]entities.ExchangeRate, error)
 }
-
-//TODO переделать мапу в сущность
